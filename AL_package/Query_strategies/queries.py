@@ -10,12 +10,14 @@ def random_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10
     queried_indices = np.random.choice(len(X), size=batch_size, replace=False)
     return queried_indices
 
+
 def unc_calc(model: MolecularModel):
     """
     Calculate uncertainty by computing variance over ensemble predictions.
     """
     _, var = model.predict()
     return var
+
 
 def most_unc_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
     """
@@ -25,6 +27,16 @@ def most_unc_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=
     queried_indices = torch.argsort(var, descending=True)[:batch_size]
     print("CHECK INDICES", queried_indices)
     return queried_indices
+
+
+def greedy_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
+    """
+    Query the samples with the best predicted properties
+    """
+    pred, var = model.predict()
+    queried_indices = torch.argsort(pred, descending=True)[:batch_size]
+    return queried_indices
+
 
 def query_balanced_samples(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
     """

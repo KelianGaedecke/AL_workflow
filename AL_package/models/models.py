@@ -5,8 +5,10 @@ import random
 import numpy as np
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
+from torch.nn.functional import l1_loss
 import matplotlib.pyplot as plt
 from chemprop import data, featurizers, models, nn
+import astartes as ast
 from utils.cluster import (
     molecular_fingerprints, determine_optimal_clusters, 
     cluster_fingerprints, divide_into_groups_based_on_score
@@ -42,12 +44,19 @@ class MolecularModel:
         self.scaler = scaler  
         self.X_og_pool = X_pool
         self.y_og_pool = y_pool
-        self.X_pool = X_pool 
-        self.y_pool = y_pool  
+        self.X_pool, self.X_val, self.X_test, self.y_pool, self.y_val, self.y_test = ast.train_val_test_split(
+                X_pool,
+                y_pool,
+                train_size=0.8,
+                val_size=0.1,
+                test_size=0.1,
+        )
+
 
         self._compute_cluster_info()
 
         self.ensemble = self._initialize_ensemble(n_models)
+
 
     def _setup_checkpoints(self):
         """Check the checkpoint directory is clean"""
@@ -77,7 +86,7 @@ class MolecularModel:
             ensemble.append(models.MPNN(mp, agg, ffn, batch_norm, metric_list))
         return ensemble
 
-    def _train_model(self, model, train_loader, model_idx):
+    def _train_model(self, model, train_loader, val_loader, model_idx):
         """Helper function to train a single model"""
         trainer = pl.Trainer(
             logger=False,
@@ -94,7 +103,7 @@ class MolecularModel:
                 )
             ]
         )
-        trainer.fit(model, train_loader)
+        trainer.fit(model, train_loader, val_loader)
 
     def _prepare_training_data(self, queried_indices):
         """Prepare training data from selected samples"""
@@ -127,8 +136,13 @@ class MolecularModel:
 
         train_loader = self._prepare_training_data(queried_indices)
 
+        # Prepare validation data loader
+        val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
+        val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
+        val_loader = data.build_dataloader(val_dset, num_workers=0)
+
         for model_idx, model in enumerate(self.ensemble):
-            self._train_model(model, train_loader, model_idx)
+            self._train_model(model, train_loader, val_loader, model_idx)
 
         self.iter += 1
     
@@ -140,6 +154,7 @@ class MolecularModel:
     
         X_train, y_train = [], []  # Track training data if train_type="ext"
         self.loss_history = []  # Store loss history
+        self.val_loss_history = []  # Store validation loss history
     
         for _ in range(num_iters):
             if len(self.X_pool) < batch_size:
@@ -166,8 +181,14 @@ class MolecularModel:
             # Prepare data loader
             train_loader = self._prepare_training_data(queried_indices)
     
+            # Prepare validation data loader
+            val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
+            val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
+            val_loader = data.build_dataloader(val_dset, num_workers=0)
+    
             # Store model losses for this iteration
             iteration_losses = []
+            iteration_val_losses = []
     
             # Train models
             for model_idx, model in enumerate(self.ensemble):
@@ -193,12 +214,18 @@ class MolecularModel:
                     ]
                 )
     
-                trainer.fit(model, train_loader)
+                trainer.fit(model, train_loader, val_loader)
     
                 # Extract training loss
                 loss = trainer.callback_metrics.get("train_loss_epoch", None)
+                val_loss = trainer.callback_metrics.get("val_loss", None)
+
+                print(f"train_loss: {loss}, val_loss: {val_loss}")
+
                 if loss is not None:
                     iteration_losses.append(loss.item())
+                if val_loss is not None:
+                    iteration_val_losses.append(val_loss.item())
     
             # Compute average and standard deviation of losses
             if iteration_losses:
@@ -206,39 +233,49 @@ class MolecularModel:
                 std_loss = np.std(iteration_losses)
                 self.loss_history.append((self.iter, avg_loss, std_loss))
     
+            if iteration_val_losses:
+                avg_val_loss = np.mean(iteration_val_losses)
+                std_val_loss = np.std(iteration_val_losses)
+                self.val_loss_history.append((self.iter, avg_val_loss, std_val_loss))
+
             self.iter += 1
             self.target_label = self.iter // self.iter_per_group
             if self.target_label > self.n_groups:
                 self.target_label = self.n_groups
-
-
     
             print(f"ITER {self.iter} completed.")
             print(f"CURRENT CLUSTER GROUP INVESTIGATED {self.target_label}")
     
-        # Plot training loss
-        self._plot_training_loss()
+        # Plot training and validation loss
+        self._plot_training_and_validation_loss()
     
-    def _plot_training_loss(self):
-        """Plot the training loss with standard deviation"""
-        if not self.loss_history:
+    def _plot_training_and_validation_loss(self):
+        """Plot the training and validation loss with standard deviation"""
+        if not self.loss_history or not self.val_loss_history:
             print("No loss history recorded.")
             return
     
         iterations, avg_losses, std_losses = zip(*self.loss_history)
+        val_iterations, avg_val_losses, std_val_losses = zip(*self.val_loss_history)
     
         plt.figure(figsize=(8, 5))
         plt.plot(iterations, avg_losses, label="Avg Training Loss", color="blue")
         plt.fill_between(iterations, 
                          np.array(avg_losses) - np.array(std_losses), 
                          np.array(avg_losses) + np.array(std_losses), 
-                         color="blue", alpha=0.2, label="Std Dev")
+                         color="blue", alpha=0.2, label="Train Std Dev")
+        
+        plt.plot(val_iterations, avg_val_losses, label="Avg Validation Loss", color="green")
+        plt.fill_between(val_iterations, 
+                         np.array(avg_val_losses) - np.array(std_val_losses), 
+                         np.array(avg_val_losses) + np.array(std_val_losses), 
+                         color="green", alpha=0.2, label="Val Std Dev")
+        
         plt.xlabel("Iteration")
-        plt.ylabel("Training Loss")
-        plt.title("Training Loss Trend")
+        plt.ylabel("Loss")
+        plt.title("Training and Validation Loss Trend")
         plt.legend()
         plt.show()
-
 
 
     def predict(self):
@@ -259,7 +296,48 @@ class MolecularModel:
 
         return predictions, variance
 
+    def evaluate(self, top_k_percent=10):
+        """Evaluate the model on the given test data"""
+        pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_test]
+        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
+        pool_dset = data.MoleculeDataset(pool_data, featurizer)
+        prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
+    
+        all_predictions = []
+        for model in self.ensemble:
+            trainer = pl.Trainer(accelerator="cpu", devices=1)
+            model_predictions = trainer.predict(model, prediction_dataloader)
+            all_predictions.append(torch.concat(model_predictions))
+    
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
+    
 
-    def evaluate(self, X_test, y_test):
-        """Evaluate the model on the given test data."""
+        error = l1_loss(predictions, torch.tensor(self.y_test, dtype=torch.float32).squeeze()).item()
 
+        pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_og_pool]
+        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
+        pool_dset = data.MoleculeDataset(pool_data, featurizer)
+        prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
+
+        all_predictions = []
+        for model in self.ensemble:
+            trainer = pl.Trainer(accelerator="cpu", devices=1)
+            model_predictions = trainer.predict(model, prediction_dataloader)
+            all_predictions.append(torch.concat(model_predictions))
+    
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
+        predictions = predictions.detach().numpy()
+
+        k = max(1, int(len(self.y_og_pool) * top_k_percent / 100))
+
+        sorted_indices_pred = np.argsort(predictions)[:k]
+        top_k_pred = set(tuple(self.X_og_pool[i]) for i in sorted_indices_pred)  
+
+        self.y_og_pool_flat = self.y_og_pool.flatten() 
+        sorted_indices_true = np.argsort(self.y_og_pool_flat)[:k]
+        top_k_true = set(tuple(self.X_og_pool[i]) for i in sorted_indices_true)  
+    
+        overlap = top_k_pred & top_k_true 
+        overlap_percentage = (len(overlap) / len(top_k_true)) * 100
+    
+        return error, overlap_percentage
