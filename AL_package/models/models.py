@@ -25,7 +25,8 @@ class MolecularModel:
         iter_per_group=None, 
         n_groups=3, 
         scaler=None, 
-        checkpoint_dir="checkpoints/"
+        checkpoint_dir="checkpoints/",
+        results_dir="results/"
     ):
         """
         Initialize the ensemble of models and store the dataset
@@ -36,6 +37,7 @@ class MolecularModel:
         self.target_label = 0
         self.iter_per_group = iter_per_group if iter_per_group else n_groups
         self.checkpoint_dir = checkpoint_dir
+        self.results_dir = results_dir
 
         self._setup_checkpoints()
 
@@ -62,6 +64,12 @@ class MolecularModel:
         if os.path.exists(self.checkpoint_dir):
             shutil.rmtree(self.checkpoint_dir)
         os.makedirs(self.checkpoint_dir)
+    
+    def _setup_results_folder(self):
+        """Ensure the results directory is clean"""
+        if os.path.exists(self.results_dir):
+            shutil.rmtree(self.results_dir)
+        os.makedirs(self.results_dir)
 
     def _compute_cluster_info(self):
         """Compute molecular fingerprints and clustering labels"""
@@ -92,7 +100,7 @@ class MolecularModel:
             enable_progress_bar=True,
             accelerator="cpu",
             devices=1,
-            max_epochs=1,
+            max_epochs=3,
             callbacks=[
                 ModelCheckpoint(
                     dirpath=self.checkpoint_dir,
@@ -105,6 +113,13 @@ class MolecularModel:
 
     def _prepare_training_data(self, queried_indices):
         """Prepare training data from selected samples"""
+
+        if queried_indices.size == 0 :
+            print("WARNING: Queried indices are empty. No training data available.")
+            return None 
+        print("QUERIED INDICES", queried_indices)
+        print("WARNING: size queried indices", len(queried_indices))
+
         X_train = [self.X_pool[i] for i in queried_indices]
         y_train = [self.y_pool[i] for i in queried_indices]
 
@@ -175,6 +190,10 @@ class MolecularModel:
                 y_train.extend(y_new)
     
             train_loader = self._prepare_training_data(queried_indices)
+
+            if train_loader is None:
+                print("Skipping iteration due to empty training dataset.")
+                continue
     
             val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
             val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
@@ -187,7 +206,8 @@ class MolecularModel:
                 if self.iter > 0:
                     checkpoint_path = os.path.join(self.checkpoint_dir, f"model-iter={self.iter}-model={model_idx}.ckpt")
                     print(f"Loading checkpoint for model {model_idx} from: {checkpoint_path}")
-                    model = models.MPNN.load_from_checkpoint(checkpoint_path)
+                    self.ensemble[model_idx] = models.MPNN.load_from_checkpoint(checkpoint_path)
+                
 
                 trainer = pl.Trainer(
                     logger=False,
@@ -195,7 +215,7 @@ class MolecularModel:
                     enable_progress_bar=True,
                     accelerator="cpu",
                     devices=1,
-                    max_epochs=1,
+                    max_epochs=3,
                     callbacks=[
                         ModelCheckpoint(
                             dirpath=self.checkpoint_dir,
@@ -219,11 +239,13 @@ class MolecularModel:
                     iteration_val_losses.append(val_loss.item())
     
             if iteration_losses:
+                print("ITERATION LOSSES", iteration_losses)
                 avg_loss = np.mean(iteration_losses)
                 std_loss = np.std(iteration_losses)
                 self.loss_history.append((self.iter, avg_loss, std_loss))
     
             if iteration_val_losses:
+                print("ITERATION VAL LOSSES", iteration_val_losses)
                 avg_val_loss = np.mean(iteration_val_losses)
                 std_val_loss = np.std(iteration_val_losses)
                 self.val_loss_history.append((self.iter, avg_val_loss, std_val_loss))
@@ -233,8 +255,14 @@ class MolecularModel:
             if self.target_label > self.n_groups - 1:
                 self.target_label = self.n_groups -1
     
-            print(f"ITER {self.iter} completed.")
-            print(f"CURRENT CLUSTER GROUP INVESTIGATED {self.target_label}")
+            #print(f"ITER {self.iter} completed.")
+            #print(f"CURRENT CLUSTER GROUP INVESTIGATED {self.target_label}")
+
+            results_txt_path = os.path.join(self.results_dir, "training_results.txt")
+
+            with open(results_txt_path, "a") as f:
+                f.write(f"{self.iter}, {loss:.4f}, {val_loss:.4f} \n")
+
     
         self._plot_training_and_validation_loss()
     
@@ -264,6 +292,7 @@ class MolecularModel:
         plt.ylabel("Loss")
         plt.title("Training and Validation Loss Trend")
         plt.legend()
+        plt.savefig(os.path.join(self.results_dir, "loss_plot.png"))
         plt.show()
 
 
@@ -328,5 +357,9 @@ class MolecularModel:
     
         overlap = top_k_pred & top_k_true 
         overlap_percentage = (len(overlap) / len(top_k_true)) * 100
+        
+        results_txt_path = os.path.join(self.results_dir, "training_results.txt")
+        with open(results_txt_path, "a") as f:
+                f.write(f"\n L1 ERROR :{error:.4f}, PERCENTAGE OF TOP {top_k_percent:.4f}  % : {overlap_percentage:.4f}% \n\n")
     
         return error, overlap_percentage

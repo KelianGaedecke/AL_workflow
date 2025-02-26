@@ -6,7 +6,7 @@ from models.models import MolecularModel
 import pandas as pd
 
 
-df = pd.read_csv("/Users/keliangaedecke/Desktop/MA_THESIS/code/AL_workflow/AL_package/data/qm9_10000_data.csv")
+df = pd.read_csv("/Users/keliangaedecke/Desktop/MA_THESIS/code/AL_workflow/AL_package/data/qm9_1000_data.csv")
 #print(len(df)*0.0045)
 
 target_columns = ["gap"]
@@ -20,8 +20,8 @@ model = MolecularModel(n_models=n_models, X_pool = X_pool, y_pool = y_pool, iter
 print(f"Initial pool size: {len(model.X_pool)}")
 print(f"Initial pool ys: {len(model.y_pool)}")
 
-model.start(ini_batch = 100)#, mod = 'representation')
-model.train(num_iters=9, query_fn=most_unc_query, batch_size=30, train_type='ext',use_uncertainty = False)
+model.start(ini_batch = 10)#, mod = 'representation')
+model.train(num_iters=5, query_fn=most_unc_query, batch_size=3, train_type='new',use_uncertainty = False)
 
 
 print(f"Remaining pool size: {len(model.X_pool)}")
