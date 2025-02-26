@@ -30,26 +30,25 @@ class MolecularModel:
         """
         Initialize the ensemble of models and store the dataset
         """
-        # Training parameters
+
         self.iter = 0
         self.n_groups = n_groups
         self.target_label = 0
         self.iter_per_group = iter_per_group if iter_per_group else n_groups
         self.checkpoint_dir = checkpoint_dir
 
-        # Ensure checkpoint directory is reset
         self._setup_checkpoints()
 
-        # Dataset & labels
         self.scaler = scaler  
         self.X_og_pool = X_pool
         self.y_og_pool = y_pool
         self.X_pool, self.X_val, self.X_test, self.y_pool, self.y_val, self.y_test = ast.train_val_test_split(
                 X_pool,
                 y_pool,
-                train_size=0.8,
-                val_size=0.1,
+                train_size=0.7,
+                val_size=0.2,
                 test_size=0.1,
+                sampler = "random"
         )
 
 
@@ -70,7 +69,6 @@ class MolecularModel:
         num_cluster = determine_optimal_clusters(self.fingerprints, max_clusters=10)
         self.cluster_labels, self.silhouette_vals, self.kmeans = cluster_fingerprints(self.fingerprints, num_cluster)
         self.difficulty_label = divide_into_groups_based_on_score(self.silhouette_vals, self.n_groups)
-        print("DIFFICULTY INDICES:", self.difficulty_label)
 
     def _initialize_ensemble(self, n_models):
         """Initialize ensemble of models"""
@@ -124,7 +122,7 @@ class MolecularModel:
 
         self.scaler = train_dset.normalize_targets()
 
-        return train_loader
+        return train_loader 
 
     def start(self, ini_batch=10, mod="random"):
         """Initial dataset selection and model training"""
@@ -136,9 +134,9 @@ class MolecularModel:
 
         train_loader = self._prepare_training_data(queried_indices)
 
-        # Prepare validation data loader
         val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
         val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
+        val_dset.normalize_targets(self.scaler)
         val_loader = data.build_dataloader(val_dset, num_workers=0)
 
         for model_idx, model in enumerate(self.ensemble):
@@ -152,9 +150,9 @@ class MolecularModel:
         if self.iter == 0:
             self.start(batch_size)
     
-        X_train, y_train = [], []  # Track training data if train_type="ext"
-        self.loss_history = []  # Store loss history
-        self.val_loss_history = []  # Store validation loss history
+        X_train, y_train = [], [] 
+        self.loss_history = []  
+        self.val_loss_history = []  
     
         for _ in range(num_iters):
             if len(self.X_pool) < batch_size:
@@ -165,12 +163,10 @@ class MolecularModel:
                 self.X_pool, self.y_pool, self.cluster_labels, 
                 self.difficulty_label, batch_size, self.target_label, model=self, use_uncertainty=use_uncertainty
             )
-    
-            # Retrieve new samples
+
             X_new = [self.X_pool[i] for i in queried_indices]
             y_new = [self.y_pool[i] for i in queried_indices]
-    
-            # Handle train_type: either overwrite or extend training set
+
             if train_type == "new":
                 X_train = X_new
                 y_train = y_new
@@ -178,26 +174,21 @@ class MolecularModel:
                 X_train.extend(X_new)
                 y_train.extend(y_new)
     
-            # Prepare data loader
             train_loader = self._prepare_training_data(queried_indices)
     
-            # Prepare validation data loader
             val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
             val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
             val_loader = data.build_dataloader(val_dset, num_workers=0)
     
-            # Store model losses for this iteration
             iteration_losses = []
             iteration_val_losses = []
-    
-            # Train models
+
             for model_idx, model in enumerate(self.ensemble):
                 if self.iter > 0:
                     checkpoint_path = os.path.join(self.checkpoint_dir, f"model-iter={self.iter}-model={model_idx}.ckpt")
                     print(f"Loading checkpoint for model {model_idx} from: {checkpoint_path}")
                     model = models.MPNN.load_from_checkpoint(checkpoint_path)
-    
-                # Train model
+
                 trainer = pl.Trainer(
                     logger=False,
                     enable_checkpointing=True,
@@ -227,7 +218,6 @@ class MolecularModel:
                 if val_loss is not None:
                     iteration_val_losses.append(val_loss.item())
     
-            # Compute average and standard deviation of losses
             if iteration_losses:
                 avg_loss = np.mean(iteration_losses)
                 std_loss = np.std(iteration_losses)
@@ -240,13 +230,12 @@ class MolecularModel:
 
             self.iter += 1
             self.target_label = self.iter // self.iter_per_group
-            if self.target_label > self.n_groups:
-                self.target_label = self.n_groups
+            if self.target_label > self.n_groups - 1:
+                self.target_label = self.n_groups -1
     
             print(f"ITER {self.iter} completed.")
             print(f"CURRENT CLUSTER GROUP INVESTIGATED {self.target_label}")
     
-        # Plot training and validation loss
         self._plot_training_and_validation_loss()
     
     def _plot_training_and_validation_loss(self):
