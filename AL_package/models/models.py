@@ -58,6 +58,7 @@ class MolecularModel:
         ############# TEST ZONE #############
 
         train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_pool, self.y_pool)]
+        print("TRAIN DATA:", train_data), "TRAIN DATA LENGTH:", len(train_data)
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
 
@@ -117,7 +118,7 @@ class MolecularModel:
             enable_progress_bar=True,
             accelerator="cpu",
             devices=1,
-            max_epochs=5,
+            max_epochs=20,
             callbacks=[
                 ModelCheckpoint(
                     dirpath=self.checkpoint_dir,
@@ -152,7 +153,7 @@ class MolecularModel:
 
         ############# TEST ZONE #############
 
-        #self.scaler = train_dset.normalize_targets()
+        self.scaler = train_dset.normalize_targets()
 
         ############# TEST ZONE #############
 
@@ -192,6 +193,7 @@ class MolecularModel:
 
         self.loss_history = []  
         self.val_loss_history = []  
+        self.test_loss_history = []
     
         for _ in range(num_iters):
             if len(self.remaining_indices) < batch_size:
@@ -214,13 +216,24 @@ class MolecularModel:
             X_new = [self.X_pool[i] for i in queried_indices]
             y_new = [self.y_pool[i] for i in queried_indices]
 
+
+            ###### BUILDING / TEST ######
+
+            #if train_type == "new":
+            #    X_train = X_new
+            #    y_train = y_new
+            #elif train_type == "ext":
+            #    X_train.extend(X_new)
+            #    y_train.extend(y_new)
+
+
             if train_type == "new":
-                X_train = X_new
-                y_train = y_new
-            elif train_type == "ext":
-                X_train.extend(X_new)
-                y_train.extend(y_new)
-            
+                train_loader = self._prepare_training_data(queried_indices)
+            if train_type == "ext":
+                all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
+                train_loader = self._prepare_training_data(all_indices)
+
+            ###### BUILDING / TEST ######
 
             train_loader = self._prepare_training_data(queried_indices)
 
@@ -248,11 +261,13 @@ class MolecularModel:
                     enable_progress_bar=True,
                     accelerator="cpu",
                     devices=1,
-                    max_epochs=5,
+                    max_epochs=20,
                     callbacks=[
                         ModelCheckpoint(
                             dirpath=self.checkpoint_dir,
-                            filename=f"model-iter={self.iter + 1}-model={model_idx}",  
+                            filename=f"model-iter={self.iter + 1}-model={model_idx}", 
+                            monitor="val_loss", 
+                            mode="min",
                             save_last=True
                         )
                     ]
@@ -282,14 +297,14 @@ class MolecularModel:
                 avg_val_loss = np.mean(iteration_val_losses)
                 std_val_loss = np.std(iteration_val_losses)
                 self.val_loss_history.append((self.iter, avg_val_loss, std_val_loss))
+            
+            self.test_loss_history.append((self.iter, self.evaluate()))
 
             self.iter += 1
             self.target_label = self.iter // self.iter_per_group
             if self.target_label > self.n_groups - 1:
                 self.target_label = self.n_groups -1
     
-            #print(f"ITER {self.iter} completed.")
-            #print(f"CURRENT CLUSTER GROUP INVESTIGATED {self.target_label}")
 
             results_txt_path = os.path.join(self.results_dir, "training_results.txt")
 
@@ -307,6 +322,9 @@ class MolecularModel:
     
         iterations, avg_losses, std_losses = zip(*self.loss_history)
         val_iterations, avg_val_losses, std_val_losses = zip(*self.val_loss_history)
+        error_iterations, avg_test_losses = zip(*self.test_loss_history)
+
+
     
         plt.figure(figsize=(8, 5))
         plt.plot(iterations, avg_losses, label="Avg Training Loss", color="blue")
@@ -321,6 +339,8 @@ class MolecularModel:
                          np.array(avg_val_losses) + np.array(std_val_losses), 
                          color="green", alpha=0.2, label="Val Std Dev")
         
+        plt.plot(error_iterations, avg_test_losses, color="orange", label="Test Loss")
+        
         plt.xlabel("Iteration")
         plt.ylabel("Loss")
         plt.title("Training and Validation Loss Trend")
@@ -331,11 +351,9 @@ class MolecularModel:
 
     def predict(self):
         """Make predictions using the trained ensemble models"""
-        
-        # Use remaining indices to select the data points to predict
+
         pool_data = [data.MoleculeDatapoint.from_smi(self.X_pool[i], 0) for i in self.remaining_indices]
         
-        # Initialize the featurizer and dataset
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         pool_dset = data.MoleculeDataset(pool_data, featurizer)
         
@@ -344,23 +362,40 @@ class MolecularModel:
     
         all_predictions = []
         for model in self.ensemble:
-            # Set up the PyTorch Lightning trainer
             trainer = pl.Trainer(accelerator="cpu", devices=1)
             
-            # Predict for the current model and gather the results
             model_predictions = trainer.predict(model, prediction_dataloader)
             
-            # Append the predictions to the list
             all_predictions.append(torch.concat(model_predictions))
     
-        # Calculate the mean and variance of the predictions from the ensemble
         predictions = torch.mean(torch.stack(all_predictions), dim=0)
         variance = torch.var(torch.stack(all_predictions), dim=0).squeeze()
     
         return predictions, variance
+    
+
+    def evaluate(self):
+        """Evaluate the model on the given test data"""
+        pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_test]
+        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
+        pool_dset = data.MoleculeDataset(pool_data, featurizer)
+        prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
+    
+        all_predictions = []
+        for model in self.ensemble:
+            trainer = pl.Trainer(accelerator="cpu", devices=1)
+            model_predictions = trainer.predict(model, prediction_dataloader)
+            all_predictions.append(torch.concat(model_predictions))
+    
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
+    
+
+        error = l1_loss(predictions, torch.tensor(self.y_test, dtype=torch.float32).squeeze()).item()
+
+        return error 
 
 
-    def evaluate(self, top_k_percent=10):
+    def get_top_k(self, top_k_percent=10):
         """Evaluate the model on the given test data"""
         pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_test]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
