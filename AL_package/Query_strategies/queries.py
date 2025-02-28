@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from models.models import MolecularModel 
+from models.models_2 import MolecularModel 
 import random
 
 def random_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):

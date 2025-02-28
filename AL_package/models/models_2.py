@@ -39,34 +39,27 @@ class MolecularModel:
         self.checkpoint_dir = checkpoint_dir
         self.results_dir = results_dir
 
+
         self._setup_checkpoints()
 
         self.scaler = scaler 
 
-        #print("SCALER:", self.scaler)
 
         self.X_og_pool = X_pool
         self.y_og_pool = y_pool
-        self.X_pool, self.X_val, self.X_test, self.y_pool, self.y_val, self.y_test = ast.train_val_test_split(
+        self.X_pool, self.X_test, self.y_pool, self.y_test = ast.train_test_split(
                 X_pool,
                 y_pool,
-                train_size=0.7,
-                val_size=0.2,
-                test_size=0.1,
+                train_size=0.8,
+                test_size=0.2,
                 sampler = "random"
         )
-        ############# TEST ZONE #############
 
-        train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_pool, self.y_pool)]
-        print("TRAIN DATA:", train_data), "TRAIN DATA LENGTH:", len(train_data)
-        featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
-        train_dset = data.MoleculeDataset(train_data, featurizer)
+        self.X_train = []
+        self.y_train = []
 
-        self.scaler = train_dset.normalize_targets()
-
-        #print("SCALER:", self.scaler)
-
-        ############# TEST ZONE #############
+        self.X_val = []
+        self.y_val = []
 
 
         self._compute_cluster_info()
@@ -74,8 +67,6 @@ class MolecularModel:
         self.queried_indices_history = []
         self.mask = np.ones(len(self.X_pool), dtype=bool)
         self.remaining_indices = np.where(self.mask)[0]
-
-
 
     def _setup_checkpoints(self):
         """Check the checkpoint directory is clean"""
@@ -112,6 +103,7 @@ class MolecularModel:
 
     def _train_model(self, model, train_loader, val_loader, model_idx):
         """Helper function to train a single model"""
+
         trainer = pl.Trainer(
             logger=False,
             enable_checkpointing=True,
@@ -133,7 +125,7 @@ class MolecularModel:
         print(f"Loading checkpoint for model {model_idx} from: {checkpoint_path}")
         self.ensemble[model_idx] = models.MPNN.load_from_checkpoint(checkpoint_path)
 
-    def _prepare_training_data(self, queried_indices):
+    def _prepare_training(self, queried_indices):
         """Prepare training data from selected samples"""
 
         if len(queried_indices) == 0 :
@@ -142,26 +134,34 @@ class MolecularModel:
         
         self.mask[queried_indices] = False
 
-        X_train = [self.X_pool[i] for i in queried_indices]
-        y_train = [self.y_pool[i] for i in queried_indices]
-        
-        # Keep track of the remaining indices
-        print("REMAINING INICES B4:",self.remaining_indices)
-        self.remaining_indices = np.where(self.mask)[0]
-        print("REMAINING INICES AFTER:",self.remaining_indices)
+        X_selected = self.X_pool[queried_indices]
+        y_selected = self.y_pool[queried_indices]
 
-        train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(X_train, y_train)]
+        self.X_train, self.X_val, self.y_train, self.y_val = ast.train_test_split(
+                X_selected,
+                y_selected,
+                train_size=0.8,
+                test_size=0.2,
+                sampler = "random"
+        )
+
+        self.remaining_indices = np.where(self.mask)[0]
+
+        train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_train, self.y_train)]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
         train_loader = data.build_dataloader(train_dset, num_workers=0)
-
-        ############# TEST ZONE #############
-
+ 
         self.scaler = train_dset.normalize_targets()
 
-        ############# TEST ZONE #############
+        val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
+        val_dset = data.MoleculeDataset(val_data, featurizer)
+        val_dset.normalize_targets(self.scaler)
 
-        return train_loader 
+        val_loader = data.build_dataloader(val_dset, num_workers=0)        
+
+        return train_loader, val_loader
+
 
     def start(self, ini_batch=10, mod="random"):
         """Initial dataset selection and model training"""
@@ -176,12 +176,7 @@ class MolecularModel:
 
         self.queried_indices_history.append(queried_indices)
 
-        train_loader = self._prepare_training_data(queried_indices)
-
-        val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
-        val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-        val_dset.normalize_targets(self.scaler)
-        val_loader = data.build_dataloader(val_dset, num_workers=0)
+        train_loader,val_loader = self._prepare_training(queried_indices)
 
         for model_idx, model in enumerate(self.ensemble):
             self._train_model(model, train_loader, val_loader, model_idx)
@@ -191,6 +186,8 @@ class MolecularModel:
 
     def train(self, query_fn, num_iters=4, batch_size=10, train_type="new", use_uncertainty=False):
         """Train the model iteratively using active learning and plot training loss"""
+
+
         if self.iter == 0:
             self.start(batch_size)
             X_train, y_train = [], [] 
@@ -213,41 +210,20 @@ class MolecularModel:
 
             queried_indices = self.remaining_indices[queried_indices]
 
-            print("QUERIED INDICES:", queried_indices)
+            #print("QUERIED INDICES:", queried_indices)
             self.queried_indices_history.append(queried_indices)
-            print("QUERIED INDICES HISTORY:", self.queried_indices_history)
-
-            X_new = [self.X_pool[i] for i in queried_indices]
-            y_new = [self.y_pool[i] for i in queried_indices]
-
-
-            ###### BUILDING / TEST ######
-
-            #if train_type == "new":
-            #    X_train = X_new
-            #    y_train = y_new
-            #elif train_type == "ext":
-            #    X_train.extend(X_new)
-            #    y_train.extend(y_new)
+            #print("QUERIED INDICES HISTORY:", self.queried_indices_history)
 
 
             if train_type == "new":
-                train_loader = self._prepare_training_data(queried_indices)
+                train_loader,val_loader = self._prepare_training(queried_indices)
             if train_type == "ext":
                 all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
-                train_loader = self._prepare_training_data(all_indices)
-
-            ###### BUILDING / TEST ######
-
-            train_loader = self._prepare_training_data(queried_indices)
+                train_loader,val_loader = self._prepare_training(all_indices)
 
             if train_loader is None:
                 print("Skipping iteration due to empty training dataset.")
                 continue
-    
-            val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
-            val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-            val_loader = data.build_dataloader(val_dset, num_workers=0)
     
             iteration_losses = []
             iteration_val_losses = []
@@ -340,14 +316,7 @@ class MolecularModel:
                          np.array(avg_losses) - np.array(std_losses), 
                          np.array(avg_losses) + np.array(std_losses), 
                          color="blue", alpha=0.2, label="Train Std Dev")
-        
-        #plt.plot(val_iterations, avg_val_losses, label="Avg Validation Loss", color="green")
-        #plt.fill_between(val_iterations, 
-        #                 np.array(avg_val_losses) - np.array(std_val_losses), 
-        #                 np.array(avg_val_losses) + np.array(std_val_losses), 
-        #                 color="green", alpha=0.2, label="Val Std Dev")
-        #
-        #plt.plot(error_iterations, avg_test_losses, color="orange", label="Test Loss")
+        plt.plot(error_iterations, avg_test_losses, color="orange", label="Test Loss")
         
         plt.xlabel("Iteration")
         plt.ylabel("Loss")
