@@ -210,9 +210,18 @@ class MolecularModel:
 
             queried_indices = self.remaining_indices[queried_indices]
 
-            #print("QUERIED INDICES:", queried_indices)
+            if train_type == "mix":
+                all_historical_indices = np.concatenate(self.queried_indices_history)
+                
+                n = min(int(len(queried_indices)//2), len(all_historical_indices))  
+                random_indices = np.random.choice(all_historical_indices, size=n, replace=False)
+                
+                all_indices = np.concatenate([queried_indices, random_indices])
+            
+                train_loader, val_loader = self._prepare_training(all_indices)
+
+
             self.queried_indices_history.append(queried_indices)
-            #print("QUERIED INDICES HISTORY:", self.queried_indices_history)
 
 
             if train_type == "new":
@@ -220,6 +229,7 @@ class MolecularModel:
             if train_type == "ext":
                 all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
                 train_loader,val_loader = self._prepare_training(all_indices)
+
 
             if train_loader is None:
                 print("Skipping iteration due to empty training dataset.")
