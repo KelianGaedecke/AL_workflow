@@ -2,7 +2,7 @@ import sys
 import os
 import numpy as np
 from Query_strategies.queries import random_query, unc_calc, most_unc_query, query_balanced_samples, greedy_query
-from models.models_2 import MolecularModel 
+from models.models_test import MolecularModel 
 import pandas as pd
 
 
@@ -20,7 +20,7 @@ print(f"Initial pool size: {len(model.X_pool)}")
 print(f"Initial pool ys: {len(model.y_pool)}")
 
 model.start(ini_batch = 100)#, mod = 'representation')
-model.train(num_iters=10, query_fn=most_unc_query, batch_size=100, train_type='mix',use_uncertainty = False)
+model.train(num_iters=8, query_fn=most_unc_query, batch_size=100, train_type='mix',use_uncertainty = False)
 
 
 print(f"Remaining pool size: {len(model.X_pool)}")

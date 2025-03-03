@@ -58,7 +58,8 @@ class MolecularModel:
         ############# TEST ZONE #############
 
         train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_pool, self.y_pool)]
-        print("TRAIN DATA:", train_data), "TRAIN DATA LENGTH:", len(train_data)
+        #train_data = [data.MoleculeDatapoint.from_smi(x) for x in self.X_pool]
+        #print("TRAIN DATA:", train_data), "TRAIN DATA LENGTH:", len(train_data)
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
 
@@ -118,7 +119,7 @@ class MolecularModel:
             enable_progress_bar=True,
             accelerator="cpu",
             devices=1,
-            max_epochs=10,
+            max_epochs=20,
             callbacks=[
                 ModelCheckpoint(
                     dirpath=self.checkpoint_dir,
@@ -146,9 +147,9 @@ class MolecularModel:
         y_train = [self.y_pool[i] for i in queried_indices]
         
         # Keep track of the remaining indices
-        print("REMAINING INICES B4:",self.remaining_indices)
+        #print("REMAINING INICES B4:",self.remaining_indices)
         self.remaining_indices = np.where(self.mask)[0]
-        print("REMAINING INICES AFTER:",self.remaining_indices)
+        #print("REMAINING INICES AFTER:",self.remaining_indices)
 
         train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(X_train, y_train)]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
@@ -213,9 +214,23 @@ class MolecularModel:
 
             queried_indices = self.remaining_indices[queried_indices]
 
-            print("QUERIED INDICES:", queried_indices)
+            
+            #print("QUERIED INDICES:", queried_indices)
+
+            if train_type == "mix":
+                all_historical_indices = np.concatenate(self.queried_indices_history)
+                
+                n = min(int(len(queried_indices)//2), len(all_historical_indices))  
+                random_indices = np.random.choice(all_historical_indices, size=n, replace=False)
+                
+                all_indices = np.concatenate([queried_indices, random_indices])
+            
+                train_loader = self._prepare_training_data(all_indices)
+
             self.queried_indices_history.append(queried_indices)
-            print("QUERIED INDICES HISTORY:", self.queried_indices_history)
+            #print("QUERIED INDICES HISTORY:", self.queried_indices_history)
+
+
 
             X_new = [self.X_pool[i] for i in queried_indices]
             y_new = [self.y_pool[i] for i in queried_indices]
@@ -265,7 +280,7 @@ class MolecularModel:
                     enable_progress_bar=True,
                     accelerator="cpu",
                     devices=1,
-                    max_epochs=10,
+                    max_epochs=20,
                     callbacks=[
                         ModelCheckpoint(
                             dirpath=self.checkpoint_dir,
@@ -340,7 +355,7 @@ class MolecularModel:
                          np.array(avg_losses) - np.array(std_losses), 
                          np.array(avg_losses) + np.array(std_losses), 
                          color="blue", alpha=0.2, label="Train Std Dev")
-        
+        plt.plot(error_iterations, avg_test_losses, color="orange", label="Test Loss")
         #plt.plot(val_iterations, avg_val_losses, label="Avg Validation Loss", color="green")
         #plt.fill_between(val_iterations, 
         #                 np.array(avg_val_losses) - np.array(std_val_losses), 

@@ -92,8 +92,9 @@ class MolecularModel:
         ensemble = []
         mp = nn.BondMessagePassing()
         agg = nn.MeanAggregation()
-        output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
-        ffn = nn.RegressionFFN(output_transform=output_transform)
+        #output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
+        #ffn = nn.RegressionFFN(output_transform=output_transform)
+        ffn = nn.RegressionFFN()
         batch_norm = True
         metric_list = [nn.metrics.RMSE(), nn.metrics.MAE()]
 
@@ -110,7 +111,7 @@ class MolecularModel:
             enable_progress_bar=True,
             accelerator="cpu",
             devices=1,
-            max_epochs=10,
+            max_epochs=20,
             callbacks=[
                 ModelCheckpoint(
                     dirpath=self.checkpoint_dir,
@@ -152,11 +153,13 @@ class MolecularModel:
         train_dset = data.MoleculeDataset(train_data, featurizer)
         train_loader = data.build_dataloader(train_dset, num_workers=0)
  
-        self.scaler = train_dset.normalize_targets()
+        #self.scaler = train_dset.normalize_targets()
 
         val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
         val_dset = data.MoleculeDataset(val_data, featurizer)
-        val_dset.normalize_targets(self.scaler)
+        print("VAL DATASET:",val_dset)
+        print("VAL DATASET TYPE:",type(val_dset))
+        #val_dset.normalize_targets(self.scaler)
 
         val_loader = data.build_dataloader(val_dset, num_workers=0)        
 
@@ -251,7 +254,7 @@ class MolecularModel:
                     enable_progress_bar=True,
                     accelerator="cpu",
                     devices=1,
-                    max_epochs=10,
+                    max_epochs=20,
                     callbacks=[
                         ModelCheckpoint(
                             dirpath=self.checkpoint_dir,
