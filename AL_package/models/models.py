@@ -63,7 +63,7 @@ class MolecularModel:
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
 
-        self.scaler = train_dset.normalize_targets()
+        #self.scaler = train_dset.normalize_targets()
 
         #print("SCALER:", self.scaler)
 
@@ -74,7 +74,9 @@ class MolecularModel:
         self.ensemble = self._initialize_ensemble(n_models)
         self.queried_indices_history = []
         self.mask = np.ones(len(self.X_pool), dtype=bool)
+        #print("MASK:", self.mask)
         self.remaining_indices = np.where(self.mask)[0]
+        #print("REMAINING INDICES:", self.remaining_indices)
 
 
 
@@ -102,8 +104,9 @@ class MolecularModel:
         ensemble = []
         mp = nn.BondMessagePassing()
         agg = nn.MeanAggregation()
-        output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
-        ffn = nn.RegressionFFN(output_transform=output_transform)
+        #output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
+        #ffn = nn.RegressionFFN(output_transform=output_transform)
+        ffn = nn.RegressionFFN()
         batch_norm = True
         metric_list = [nn.metrics.RMSE(), nn.metrics.MAE()]
 
@@ -141,15 +144,23 @@ class MolecularModel:
             print("WARNING: Queried indices are empty. No training data available.")
             return None 
         
+        previous_mask = self.mask
+        print(f"Queried indices: {queried_indices}")
+        print(f"Mask before update (sum of True values): {np.sum(previous_mask)}")
+        ### update the masking of the queried molecules  ### THIS IS WHERE IT FAILS ???? 
+        ### !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!  
         self.mask[queried_indices] = False
 
+        if np.all(self.mask == previous_mask):
+            print("WARNING: Masking has not changed. No training data available.")
+
+        print(f"Mask after update (sum of True values): {np.sum(self.mask)}")
+
+        ### get the corresponding X and y values of the queried indices
         X_train = [self.X_pool[i] for i in queried_indices]
         y_train = [self.y_pool[i] for i in queried_indices]
-        
-        # Keep track of the remaining indices
-        #print("REMAINING INICES B4:",self.remaining_indices)
+        ### update the remaining indices using the mask vector previously updated
         self.remaining_indices = np.where(self.mask)[0]
-        #print("REMAINING INICES AFTER:",self.remaining_indices)
 
         train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(X_train, y_train)]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
@@ -158,7 +169,7 @@ class MolecularModel:
 
         ############# TEST ZONE #############
 
-        self.scaler = train_dset.normalize_targets()
+        #self.scaler = train_dset.normalize_targets()
 
         ############# TEST ZONE #############
 
@@ -181,7 +192,7 @@ class MolecularModel:
 
         val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
         val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-        val_dset.normalize_targets(self.scaler)
+        #val_dset.normalize_targets(self.scaler)
         val_loader = data.build_dataloader(val_dset, num_workers=0)
 
         for model_idx, model in enumerate(self.ensemble):
@@ -194,7 +205,6 @@ class MolecularModel:
         """Train the model iteratively using active learning and plot training loss"""
         if self.iter == 0:
             self.start(batch_size)
-            X_train, y_train = [], [] 
 
         self.loss_history = []  
         self.val_loss_history = []  
@@ -205,17 +215,16 @@ class MolecularModel:
                 print("Not enough data left in the pool for another iteration.")
                 break
     
-            queried_indices = np.array(query_fn(
+
+            ### suppose to give me the target indices in the remaining indices
+            target_in_remaining = np.array(query_fn(
                 self.remaining_indices, self.y_pool, self.cluster_labels, 
                 self.difficulty_label, batch_size,
                 self.target_label, model=self, use_uncertainty=use_uncertainty
             ))
 
-
-            queried_indices = self.remaining_indices[queried_indices]
-
-            
-            #print("QUERIED INDICES:", queried_indices)
+            ### retriving the corresponding indices in the remaining indices
+            queried_indices = self.remaining_indices[target_in_remaining]
 
             if train_type == "mix":
                 all_historical_indices = np.concatenate(self.queried_indices_history)
@@ -228,33 +237,12 @@ class MolecularModel:
                 train_loader = self._prepare_training_data(all_indices)
 
             self.queried_indices_history.append(queried_indices)
-            #print("QUERIED INDICES HISTORY:", self.queried_indices_history)
-
-
-
-            X_new = [self.X_pool[i] for i in queried_indices]
-            y_new = [self.y_pool[i] for i in queried_indices]
-
-
-            ###### BUILDING / TEST ######
-
-            #if train_type == "new":
-            #    X_train = X_new
-            #    y_train = y_new
-            #elif train_type == "ext":
-            #    X_train.extend(X_new)
-            #    y_train.extend(y_new)
-
 
             if train_type == "new":
                 train_loader = self._prepare_training_data(queried_indices)
             if train_type == "ext":
                 all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
                 train_loader = self._prepare_training_data(all_indices)
-
-            ###### BUILDING / TEST ######
-
-            train_loader = self._prepare_training_data(queried_indices)
 
             if train_loader is None:
                 print("Skipping iteration due to empty training dataset.")
@@ -297,8 +285,7 @@ class MolecularModel:
                 checkpoint_path = os.path.join(self.checkpoint_dir, f"model-iter={self.iter + 1}-model={model_idx}.ckpt")
                 print(f"Loading checkpoint for model {model_idx} from: {checkpoint_path}")
                 self.ensemble[model_idx] = models.MPNN.load_from_checkpoint(checkpoint_path)
-    
-                # Extract training loss
+
                 loss = trainer.callback_metrics.get("train_loss_epoch", None)
                 val_loss = trainer.callback_metrics.get("val_loss", None)
 
@@ -376,11 +363,14 @@ class MolecularModel:
         """Make predictions using the trained ensemble models"""
 
         pool_data = [data.MoleculeDatapoint.from_smi(self.X_pool[i], 0) for i in self.remaining_indices]
+        ### The pool_data will then have the same length as the self.remaining_indices and also have corresponding indices
+        ### and have the same order as the self.remaining_indices
+        
+        assert len(pool_data) == len(self.remaining_indices), "Mismatch in selected molecules!"
         
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         pool_dset = data.MoleculeDataset(pool_data, featurizer)
         
-        # Create the data loader
         prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
     
         all_predictions = []
@@ -394,7 +384,7 @@ class MolecularModel:
         predictions = torch.mean(torch.stack(all_predictions), dim=0)
         variance = torch.var(torch.stack(all_predictions), dim=0).squeeze()
     
-        return predictions, variance
+        return predictions, variance # With the length and corresponding indices of the remaining indices 
     
 
     def evaluate(self):
@@ -418,6 +408,7 @@ class MolecularModel:
         return error 
 
 
+###### NEEDS UPDATES ######
     def get_top_k(self, top_k_percent=10):
         """Evaluate the model on the given test data"""
         pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_test]

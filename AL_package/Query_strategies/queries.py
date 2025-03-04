@@ -1,7 +1,11 @@
 import numpy as np
 import torch
-from models.models_test import MolecularModel 
+from models.models import MolecularModel 
 import random
+
+"""
+The query functions must return the indices from the self.remaining indices list that must be probed.
+"""
 
 def random_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
     """
@@ -10,23 +14,34 @@ def random_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10
     queried_indices = np.random.choice(len(X), size=batch_size, replace=False)
     return queried_indices
 
-
 def unc_calc(model: MolecularModel):
     """
     Calculate uncertainty by computing variance over ensemble predictions.
     """
-    _, var = model.predict()
+    predictions, var = model.predict()
     return var
-
 
 def most_unc_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
     """
     Query the samples with the highest uncertainty
     """
     var = unc_calc(model)
-    queried_indices = torch.argsort(var, descending=True)[:batch_size]
-    print("CHECK INDICES", queried_indices)
-    return queried_indices
+
+    ### Get the indices of the var vector with the highest ensemble variances/uncertainties
+    sorted_indices_relative = torch.argsort(var, descending=True)[:batch_size]
+
+    return sorted_indices_relative
+
+
+#def most_unc_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
+#    """
+#    Query the samples with the highest uncertainty
+#    """
+#    var = unc_calc(model)
+#    queried_indices = torch.argsort(var, descending=True)[:batch_size]
+#    print("CHECK INDICES", queried_indices)
+#    return queried_indices
+
 
 
 def greedy_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):

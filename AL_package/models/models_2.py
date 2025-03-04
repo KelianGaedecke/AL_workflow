@@ -189,8 +189,6 @@ class MolecularModel:
 
     def train(self, query_fn, num_iters=4, batch_size=10, train_type="new", use_uncertainty=False):
         """Train the model iteratively using active learning and plot training loss"""
-
-
         if self.iter == 0:
             self.start(batch_size)
             X_train, y_train = [], [] 
@@ -204,14 +202,15 @@ class MolecularModel:
                 print("Not enough data left in the pool for another iteration.")
                 break
     
-            queried_indices = np.array(query_fn(
+            target_in_remaining = np.array(query_fn(
                 self.remaining_indices, self.y_pool, self.cluster_labels, 
                 self.difficulty_label, batch_size,
                 self.target_label, model=self, use_uncertainty=use_uncertainty
             ))
 
 
-            queried_indices = self.remaining_indices[queried_indices]
+            queried_indices = self.remaining_indices[target_in_remaining]
+
 
             if train_type == "mix":
                 all_historical_indices = np.concatenate(self.queried_indices_history)
@@ -221,22 +220,32 @@ class MolecularModel:
                 
                 all_indices = np.concatenate([queried_indices, random_indices])
             
-                train_loader, val_loader = self._prepare_training(all_indices)
-
+                train_loader = self._prepare_training_data(all_indices)
 
             self.queried_indices_history.append(queried_indices)
 
 
+
+            X_new = [self.X_pool[i] for i in queried_indices]
+            y_new = [self.y_pool[i] for i in queried_indices]
+
+
             if train_type == "new":
-                train_loader,val_loader = self._prepare_training(queried_indices)
+                train_loader = self._prepare_training_data(queried_indices)
             if train_type == "ext":
                 all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
-                train_loader,val_loader = self._prepare_training(all_indices)
+                train_loader = self._prepare_training_data(all_indices)
 
+
+            train_loader = self._prepare_training_data(queried_indices)
 
             if train_loader is None:
                 print("Skipping iteration due to empty training dataset.")
                 continue
+    
+            val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
+            val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
+            val_loader = data.build_dataloader(val_dset, num_workers=0)
     
             iteration_losses = []
             iteration_val_losses = []
@@ -347,7 +356,6 @@ class MolecularModel:
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         pool_dset = data.MoleculeDataset(pool_data, featurizer)
         
-        # Create the data loader
         prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
     
         all_predictions = []
@@ -360,7 +368,8 @@ class MolecularModel:
     
         predictions = torch.mean(torch.stack(all_predictions), dim=0)
         variance = torch.var(torch.stack(all_predictions), dim=0).squeeze()
-    
+
+        print("SIZE:",predictions.shape)
         return predictions, variance
     
 
