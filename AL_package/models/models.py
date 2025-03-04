@@ -58,14 +58,10 @@ class MolecularModel:
         ############# TEST ZONE #############
 
         train_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_pool, self.y_pool)]
-        #train_data = [data.MoleculeDatapoint.from_smi(x) for x in self.X_pool]
-        #print("TRAIN DATA:", train_data), "TRAIN DATA LENGTH:", len(train_data)
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
 
-        self.scaler = train_dset.normalize_targets()
-
-        #print("SCALER:", self.scaler)
+        #self.scaler = train_dset.normalize_targets()
 
         ############# TEST ZONE #############
 
@@ -74,9 +70,7 @@ class MolecularModel:
         self.ensemble = self._initialize_ensemble(n_models)
         self.queried_indices_history = []
         self.mask = np.ones(len(self.X_pool), dtype=bool)
-        #print("MASK:", self.mask)
         self.remaining_indices = np.where(self.mask)[0]
-        #print("REMAINING INDICES:", self.remaining_indices)
 
 
 
@@ -104,9 +98,9 @@ class MolecularModel:
         ensemble = []
         mp = nn.BondMessagePassing()
         agg = nn.MeanAggregation()
-        output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
-        ffn = nn.RegressionFFN(output_transform=output_transform)
-        #ffn = nn.RegressionFFN()
+        #output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
+        #ffn = nn.RegressionFFN(output_transform=output_transform)
+        ffn = nn.RegressionFFN()
         batch_norm = True
         metric_list = [nn.metrics.RMSE(), nn.metrics.MAE()]
 
@@ -169,7 +163,7 @@ class MolecularModel:
 
         ############# TEST ZONE #############
 
-        self.scaler = train_dset.normalize_targets()
+        #self.scaler = train_dset.normalize_targets()
 
         ############# TEST ZONE #############
 
@@ -192,7 +186,7 @@ class MolecularModel:
 
         val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
         val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-        val_dset.normalize_targets(self.scaler)
+        #val_dset.normalize_targets(self.scaler)
         val_loader = data.build_dataloader(val_dset, num_workers=0)
 
         for model_idx, model in enumerate(self.ensemble):
@@ -218,9 +212,14 @@ class MolecularModel:
 
             ### suppose to give me the target indices in the remaining indices
             target_in_remaining = np.array(query_fn(
-                self.remaining_indices, self.y_pool, self.cluster_labels, 
-                self.difficulty_label, batch_size,
-                self.target_label, model=self, use_uncertainty=use_uncertainty
+                self.remaining_indices, 
+                self.y_pool[self.remaining_indices],  # Select only the remaining indices
+                self.cluster_labels[self.remaining_indices], 
+                self.difficulty_label[self.remaining_indices], 
+                batch_size,
+                self.target_label, 
+                model=self, 
+                use_uncertainty=use_uncertainty
             ))
 
             ### retriving the corresponding indices in the remaining indices
@@ -228,9 +227,13 @@ class MolecularModel:
 
             if train_type == "mix":
                 all_historical_indices = np.concatenate(self.queried_indices_history)
+                print("ALL HISTORICAL INDICES", all_historical_indices)
                 
                 n = min(int(len(queried_indices)//2), len(all_historical_indices))  
                 random_indices = np.random.choice(all_historical_indices, size=n, replace=False)
+                print("RANDOM INDICES", random_indices)
+                print("QUERIED INDICES", queried_indices)
+
                 
                 all_indices = np.concatenate([queried_indices, random_indices])
             
@@ -279,7 +282,7 @@ class MolecularModel:
                         )
                     ]
                 )
-    
+                
                 trainer.fit(model, train_loader, val_loader)
 
                 checkpoint_path = os.path.join(self.checkpoint_dir, f"model-iter={self.iter + 1}-model={model_idx}.ckpt")
@@ -381,7 +384,7 @@ class MolecularModel:
             
             all_predictions.append(torch.concat(model_predictions))
     
-        predictions = torch.mean(torch.stack(all_predictions), dim=0)
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
         variance = torch.var(torch.stack(all_predictions), dim=0).squeeze()
     
         return predictions, variance # With the length and corresponding indices of the remaining indices 

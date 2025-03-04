@@ -20,7 +20,7 @@ print(f"Initial pool size: {len(model.X_pool)}")
 print(f"Initial pool ys: {len(model.y_pool)}")
 
 model.start(ini_batch = 10)#, mod = 'representation')
-model.train(num_iters=20, query_fn=most_unc_query, batch_size=10, train_type='mix',use_uncertainty = False)
+model.train(num_iters=20, query_fn=query_balanced_samples, batch_size=10, train_type='mix',use_uncertainty = True)
 
 
 print(f"Remaining pool size: {len(model.X_pool)}")

@@ -49,8 +49,12 @@ def greedy_query(X, y, cluster_labels=None, difficulty_label=None, batch_size=10
     Query the samples with the best predicted properties
     """
     pred, var = model.predict()
-    queried_indices = torch.argsort(pred, descending=True)[:batch_size]
-    return queried_indices
+    print("VAR:",var[:5])
+    print("PRED SHAPE", pred.shape)
+    print("5 first predictions", pred[:5])
+    sorted_indices_relative = torch.argsort(pred, descending=False)[:batch_size]
+    print("SORTED INDICES", sorted_indices_relative)
+    return sorted_indices_relative
 
 
 def query_balanced_samples(X, y, cluster_labels=None, difficulty_label=None, batch_size=10, target_label=0, model: MolecularModel=None, use_uncertainty=False):
