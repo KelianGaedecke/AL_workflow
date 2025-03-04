@@ -126,7 +126,7 @@ class MolecularModel:
         print(f"Loading checkpoint for model {model_idx} from: {checkpoint_path}")
         self.ensemble[model_idx] = models.MPNN.load_from_checkpoint(checkpoint_path)
 
-    def _prepare_training(self, queried_indices):
+    def _prepare_training_data(self, queried_indices):
         """Prepare training data from selected samples"""
 
         if len(queried_indices) == 0 :
@@ -179,7 +179,7 @@ class MolecularModel:
 
         self.queried_indices_history.append(queried_indices)
 
-        train_loader,val_loader = self._prepare_training(queried_indices)
+        train_loader,val_loader = self._prepare_training_data(queried_indices)
 
         for model_idx, model in enumerate(self.ensemble):
             self._train_model(model, train_loader, val_loader, model_idx)
@@ -203,9 +203,14 @@ class MolecularModel:
                 break
     
             target_in_remaining = np.array(query_fn(
-                self.remaining_indices, self.y_pool, self.cluster_labels, 
-                self.difficulty_label, batch_size,
-                self.target_label, model=self, use_uncertainty=use_uncertainty
+                self.remaining_indices, 
+                self.y_pool[self.remaining_indices], 
+                self.cluster_labels[self.remaining_indices], 
+                self.difficulty_label[self.remaining_indices], 
+                batch_size,
+                self.target_label, 
+                model=self, 
+                use_uncertainty=use_uncertainty
             ))
 
 
@@ -220,7 +225,7 @@ class MolecularModel:
                 
                 all_indices = np.concatenate([queried_indices, random_indices])
             
-                train_loader = self._prepare_training_data(all_indices)
+                train_loader, val_loader = self._prepare_training_data(all_indices)
 
             self.queried_indices_history.append(queried_indices)
 
@@ -231,21 +236,18 @@ class MolecularModel:
 
 
             if train_type == "new":
-                train_loader = self._prepare_training_data(queried_indices)
+                train_loader, val_loader = self._prepare_training_data(queried_indices)
             if train_type == "ext":
                 all_indices = np.concatenate([np.array(indices) for indices in self.queried_indices_history])
-                train_loader = self._prepare_training_data(all_indices)
-
-
-            train_loader = self._prepare_training_data(queried_indices)
+                train_loader, val_loader = self._prepare_training_data(all_indices)
 
             if train_loader is None:
                 print("Skipping iteration due to empty training dataset.")
                 continue
     
-            val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
-            val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-            val_loader = data.build_dataloader(val_dset, num_workers=0)
+            #val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
+            #val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
+            #val_loader = data.build_dataloader(val_dset, num_workers=0)
     
             iteration_losses = []
             iteration_val_losses = []
@@ -274,6 +276,7 @@ class MolecularModel:
                         )
                     ]
                 )
+
     
                 trainer.fit(model, train_loader, val_loader)
 
@@ -353,6 +356,8 @@ class MolecularModel:
 
         pool_data = [data.MoleculeDatapoint.from_smi(self.X_pool[i], 0) for i in self.remaining_indices]
         
+        assert len(pool_data) == len(self.remaining_indices), "Mismatch in selected molecules!"
+        
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         pool_dset = data.MoleculeDataset(pool_data, featurizer)
         
@@ -366,11 +371,10 @@ class MolecularModel:
             
             all_predictions.append(torch.concat(model_predictions))
     
-        predictions = torch.mean(torch.stack(all_predictions), dim=0)
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
         variance = torch.var(torch.stack(all_predictions), dim=0).squeeze()
-
-        print("SIZE:",predictions.shape)
-        return predictions, variance
+    
+        return predictions, variance 
     
 
     def evaluate(self):
@@ -396,21 +400,46 @@ class MolecularModel:
 
     def get_top_k(self, top_k_percent=10):
         """Evaluate the model on the given test data"""
-        pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_test]
+        pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_og_pool]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         pool_dset = data.MoleculeDataset(pool_data, featurizer)
         prediction_dataloader = data.build_dataloader(pool_dset, shuffle=False)
-    
+
         all_predictions = []
         for model in self.ensemble:
             trainer = pl.Trainer(accelerator="cpu", devices=1)
             model_predictions = trainer.predict(model, prediction_dataloader)
             all_predictions.append(torch.concat(model_predictions))
-    
-        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
-    
 
-        error = l1_loss(predictions, torch.tensor(self.y_test, dtype=torch.float32).squeeze()).item()
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
+        
+        print(f"POOL DATA LEN: {len(predictions)}")
+        percent = len(predictions*top_k_percent)//100
+        print(f"Percent: {percent}")
+        top_pred_indices = np.argsort(predictions)[:percent]
+        print("TOP PRED",top_pred_indices)
+        
+        true_value = self.y_og_pool.squeeze()
+
+        top_true_indices = np.argsort(true_value)[:percent]
+        top_pred_indices = top_pred_indices.cpu().numpy()
+
+        print("TOP TRUE",top_true_indices)
+
+        common_indices = np.isin(top_pred_indices, top_true_indices)
+
+        num_common = np.sum(common_indices)
+        print("NUM COMMON:",num_common)
+        print(f"FOUND {num_common*100/(percent)} out of the top {top_k_percent}%")
+
+        return num_common/(percent)
+    
+    def _scatter_plot(self):
+        """
+        Plots the true target values (self.y_og_pool) vs. the average predictions 
+        of the model ensemble using self.X_og_pool.
+        Includes a red dotted line indicating perfect prediction.
+        """
 
         pool_data = [data.MoleculeDatapoint.from_smi(x, 0) for x in self.X_og_pool]
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
@@ -422,24 +451,18 @@ class MolecularModel:
             trainer = pl.Trainer(accelerator="cpu", devices=1)
             model_predictions = trainer.predict(model, prediction_dataloader)
             all_predictions.append(torch.concat(model_predictions))
-    
-        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze()
-        predictions = predictions.detach().numpy()
 
-        k = max(1, int(len(self.y_og_pool) * top_k_percent / 100))
+        predictions = torch.mean(torch.stack(all_predictions), dim=0).squeeze().detach().numpy()
+        true_values = self.y_og_pool.squeeze()
 
-        sorted_indices_pred = np.argsort(predictions)[:k]
-        top_k_pred = set(tuple(self.X_og_pool[i]) for i in sorted_indices_pred)  
+        plt.figure(figsize=(8, 6))
+        plt.scatter(true_values, predictions, alpha=0.5)
+        plt.xlabel("True Target Values (self.y_og_pool)")
+        plt.ylabel("Average Predictions")
+        plt.grid(True)
 
-        self.y_og_pool_flat = self.y_og_pool.flatten() 
-        sorted_indices_true = np.argsort(self.y_og_pool_flat)[:k]
-        top_k_true = set(tuple(self.X_og_pool[i]) for i in sorted_indices_true)  
-    
-        overlap = top_k_pred & top_k_true 
-        overlap_percentage = (len(overlap) / len(top_k_true)) * 100
-        
-        results_txt_path = os.path.join(self.results_dir, "training_results.txt")
-        with open(results_txt_path, "a") as f:
-                f.write(f"\n L1 ERROR :{error:.4f}, PERCENTAGE OF TOP {top_k_percent:.4f}  % : {overlap_percentage:.4f}% \n\n")
-    
-        return error, overlap_percentage
+        plt.plot([min(true_values), max(true_values)], [min(true_values), max(true_values)], 'r--', label="Perfect Correlation")
+
+        plt.legend() 
+        plt.savefig(os.path.join(self.results_dir, "scatter_plot.png"))
+        plt.show()
