@@ -63,7 +63,7 @@ class MolecularModel:
         featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer()
         train_dset = data.MoleculeDataset(train_data, featurizer)
 
-        #self.scaler = train_dset.normalize_targets()
+        self.scaler = train_dset.normalize_targets()
 
         #print("SCALER:", self.scaler)
 
@@ -104,9 +104,9 @@ class MolecularModel:
         ensemble = []
         mp = nn.BondMessagePassing()
         agg = nn.MeanAggregation()
-        #output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
-        #ffn = nn.RegressionFFN(output_transform=output_transform)
-        ffn = nn.RegressionFFN()
+        output_transform = nn.UnscaleTransform.from_standard_scaler(self.scaler) if self.scaler else None
+        ffn = nn.RegressionFFN(output_transform=output_transform)
+        #ffn = nn.RegressionFFN()
         batch_norm = True
         metric_list = [nn.metrics.RMSE(), nn.metrics.MAE()]
 
@@ -169,7 +169,7 @@ class MolecularModel:
 
         ############# TEST ZONE #############
 
-        #self.scaler = train_dset.normalize_targets()
+        self.scaler = train_dset.normalize_targets()
 
         ############# TEST ZONE #############
 
@@ -192,7 +192,7 @@ class MolecularModel:
 
         val_data = [data.MoleculeDatapoint.from_smi(x, y) for x, y in zip(self.X_val, self.y_val)]
         val_dset = data.MoleculeDataset(val_data, featurizers.SimpleMoleculeMolGraphFeaturizer())
-        #val_dset.normalize_targets(self.scaler)
+        val_dset.normalize_targets(self.scaler)
         val_loader = data.build_dataloader(val_dset, num_workers=0)
 
         for model_idx, model in enumerate(self.ensemble):
